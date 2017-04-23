@@ -338,6 +338,8 @@
 
 		/**
 		 * Find the Store's collection for a certain type of model.
+		 * Hint: Instead of the concrete subtype instances a store collection always contains the models of the generic type.
+     * Therefore the id of each submodel must be unique over ALL other submodels of the same generic submodel.     
 		 * @param {Backbone.Relational.Model} type
 		 * @param {Boolean} [create=true] Should a collection be created if none is found?
 		 * @return {module.Collection} A collection if found (or applicable for 'model'), or null
@@ -480,7 +482,8 @@
 					console.warn( 'Duplicate id! Old RelationalModel=%o, new RelationalModel=%o', duplicate, model );
 				}
 
-				throw new Error( "Cannot instantiate more than one Backbone.Relational.Model with the same id per type!" );
+				throw new Error( "Cannot instantiate more than one Backbone.RelationalModel with the same id per type!\n" +
+				"ID: " + id + "; Class: " + model.constructor.name + "; Class Duplicate: " + duplicate.constructor.name);
 			}
 		},
 
@@ -1747,9 +1750,16 @@
 		 * @return {Backbone.Model}
 		 */
 		_findSubModelType: function( type, attributes ) {
-			if ( type._subModels && type.prototype.subModelTypeAttribute in attributes ) {
-				var subModelTypeAttribute = attributes[ type.prototype.subModelTypeAttribute ];
+			if ( type._subModels) {
+				var subModelTypeAttribute;
+				if (_.isObject(attributes) && (type.prototype.subModelTypeAttribute in attributes)) {
+						subModelTypeAttribute = attributes[type.prototype.subModelTypeAttribute];
+				} else {
+					subModelTypeAttribute = attributes; // attributes is no object but already a single ID value
+				}
+
 				var subModelType = type._subModels[ subModelTypeAttribute ];
+
 				if ( subModelType ) {
 					return subModelType;
 				}
@@ -1763,6 +1773,7 @@
 					}
 				}
 			}
+
 			return null;
 		},
 
@@ -1832,26 +1843,47 @@
 		 */
 		findOrCreate: function( attributes, options ) {
 			options || ( options = {} );
-			var parsedAttributes = ( _.isObject( attributes ) && options.parse && this.prototype.parse ) ?
-				this.prototype.parse( _.clone( attributes ), options ) : attributes;
+      var subModel = this._findSubModelType( this, attributes );
+			var parsedAttributes = undefined;
+			var modelForParsing  = subModel || this;
+
+      // attributes can also be a plain ID string, see issue #487
+      if (!_.isObject( attributes )) {
+        attributes = {id: attributes};
+      }
+
+      // Build a unique combined ID if according builder function exists and a base ID is present.
+			// (useful if subtypes share the same ID e.g. two animals can have the same ID when they are stored in different
+			// DB tables, e.g. cats and dogs). In this case build a unique ID e.g. dog-7, cat-7 instead of 7, 7.
+			if ((attributes.id !== undefined) && modelForParsing.prototype.appendCombinedId){
+        modelForParsing.prototype.appendCombinedId(attributes);
+			}
+
+      if ( _.isObject( attributes ) && options.parse && modelForParsing.prototype.parse )
+				parsedAttributes = modelForParsing.prototype.parse( _.clone( attributes ));
+			else
+				parsedAttributes = attributes;
 
 			// If specified, use a custom `find` function to match up existing models to the given attributes.
 			// Otherwise, try to find an instance of 'this' model type in the store
-			var model = this.findModel( parsedAttributes );
+			var model = modelForParsing.findModel( parsedAttributes );
+
+			// mark all models from the store as isFetched (i.e. as being populated with data)
+			if(model!= undefined) {
+        model.isFetched = true;
+      }
 
 			// If we found an instance, update it with the data in 'item' (unless 'options.merge' is false).
 			// If not, create an instance (unless 'options.create' is false).
-			if ( _.isObject( attributes ) ) {
-				if ( model && options.merge !== false ) {
-					// Make sure `options.collection` and `options.url` doesn't cascade to nested models
-					delete options.collection;
-					delete options.url;
+			if ( _.isObject( parsedAttributes ) && ( model && options.merge !== false )) {
+				// Make sure `options.collection` and `options.url` doesn't cascade to nested models
+				delete options.collection;
+				delete options.url;
 
-					model.set( parsedAttributes, options );
-				}
-				else if ( !model && options.create !== false ) {
-					model = this.build( parsedAttributes, _.defaults( { parse: false }, options ) );
-				}
+				model.set( parsedAttributes, options );
+			}
+			else if ( !model && options.create !== false ) {
+				model = this.build( parsedAttributes, _.defaults( { parse: false }, options ) );
 			}
 
 			return model;
